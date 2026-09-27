@@ -6,7 +6,7 @@
 // production build: `OBSERVE` is undefined there and the declaration folds out.
 import { createMemo } from "solid-js";
 import { render } from "@solidjs/web";
-import { attribution } from "solid-js/attribution";
+import { attribution, feedback } from "solid-js/attribution";
 import { vi } from "vitest";
 import {
   createRouter,
@@ -39,7 +39,7 @@ function mount(Router: (props: any) => any) {
   };
 }
 
-const last = () => attribution.navigations()[attribution.navigations().length - 1];
+const last = () => attribution.history("navigation")[attribution.history("navigation").length - 1];
 
 describe("observe tier: navigations declared to attribution", () => {
   const originalScrollTo = window.scrollTo;
@@ -50,6 +50,71 @@ describe("observe tier: navigations declared to attribution", () => {
   afterEach(() => attribution.disable());
   afterAll(() => {
     window.scrollTo = originalScrollTo;
+  });
+
+  test("mounting declares the route the document arrived on — the first record, initial", () => {
+    const Router = createRouter({
+      routes: [
+        { path: "/", component: () => <div data-route="home">Home</div> },
+        {
+          path: "/users/:id",
+          component: () => {
+            const params = useParams();
+            return <div data-route="user">{params.id}</div>;
+          }
+        }
+      ] as const,
+      history: memoryHistory("/users/42?tab=posts")
+    });
+    const before = attribution.history("navigation").length;
+    const { div, cleanup } = mount(Router);
+    try {
+      expect(div.querySelector('[data-route="user"]')?.textContent).toBe("42");
+      // Delivered as the router finished building its context: no write to
+      // wait for, so the record settled at frame close.
+      expect(attribution.history("navigation").length).toBe(before + 1);
+      const nav = last();
+      expect(nav.initial).toBe(true);
+      expect(nav.name).toBe("/users/:id");
+      expect(nav.to).toBe("/users/42?tab=posts");
+      expect(nav.params).toEqual({ id: "42" });
+      expect(nav.from).toBeUndefined();
+      expect(nav.interaction).toBeUndefined();
+      // The document's own navigation start on the performance clock.
+      expect(nav.at).toBe(0);
+      expect(nav.writes).toBe(0);
+      expect(nav.outcome).toBe("committed");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the initial declaration is not a row in feedback().navigations", async () => {
+    let navigate!: Navigator;
+    const Router = createRouter({
+      routes: [
+        {
+          path: "/",
+          component: () => {
+            navigate = useNavigate();
+            return <div data-route="home">Home</div>;
+          }
+        },
+        { path: "/about", component: () => <div data-route="about">About</div> }
+      ] as const,
+      history: memoryHistory()
+    });
+    const { cleanup } = mount(Router);
+    try {
+      expect(last().initial).toBe(true);
+      navigate("/about");
+      await settle();
+      const rows = feedback().navigations;
+      expect(rows.map(r => r.name)).toEqual(["/about"]);
+      expect(rows[0].navigations).toBe(1);
+    } finally {
+      cleanup();
+    }
   });
 
   test("navigate() declares the parametrized route, params, and origin location", async () => {
@@ -76,12 +141,12 @@ describe("observe tier: navigations declared to attribution", () => {
 
     const { div, cleanup } = mount(Router);
     try {
-      const before = attribution.navigations().length;
+      const before = attribution.history("navigation").length;
       navigate("/users/42");
       await settle();
       expect(div.querySelector('[data-route="user"]')?.textContent).toBe("42");
 
-      expect(attribution.navigations().length).toBe(before + 1);
+      expect(attribution.history("navigation").length).toBe(before + 1);
       const nav = last();
       expect(nav.name).toBe("/users/:id");
       expect(nav.to).toBe("/users/42");
@@ -147,13 +212,13 @@ describe("observe tier: navigations declared to attribution", () => {
 
     const { div, cleanup } = mount(Router);
     try {
-      const before = attribution.navigations().length;
+      const before = attribution.history("navigation").length;
       navigate("/files");
       await settle(60);
       expect(div.querySelector('[data-route="login"]')).toBeTruthy();
 
       // one navigation, two writes, the abandoned destination recorded as a hop
-      expect(attribution.navigations().length).toBe(before + 1);
+      expect(attribution.history("navigation").length).toBe(before + 1);
       const nav = last();
       expect(nav.name).toBe("/login");
       expect(nav.to).toBe("/login");
@@ -204,12 +269,12 @@ describe("observe tier: navigations declared to attribution", () => {
 
     const { div, cleanup } = mount(Router);
     try {
-      const before = attribution.navigations().length;
+      const before = attribution.history("navigation").length;
       navigate("/private");
       await settle(60);
       expect(div.querySelector('[data-route="login"]')).toBeTruthy();
 
-      expect(attribution.navigations().length).toBe(before + 1);
+      expect(attribution.history("navigation").length).toBe(before + 1);
       const nav = last();
       expect(nav.name).toBe("/login");
       expect(nav.from).toBe("/");
@@ -290,11 +355,11 @@ describe("observe tier: navigations declared to attribution", () => {
       await settle();
       expect(div.querySelector('[data-route="user"]')).toBeTruthy();
 
-      const before = attribution.navigations().length;
+      const before = attribution.history("navigation").length;
       history.go(-1);
       await settle();
       expect(div.querySelector('[data-route="home"]')).toBeTruthy();
-      expect(attribution.navigations().length).toBe(before + 1);
+      expect(attribution.history("navigation").length).toBe(before + 1);
       const nav = last();
       expect(nav.name).toBe("/");
       expect(nav.from).toBe("/users/1");
